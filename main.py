@@ -240,8 +240,6 @@ def send_email_code(email, code, purpose):
     email_from = os.environ.get("EMAIL_FROM", smtp_user)
 
     if not smtp_host or not smtp_user or not smtp_password:
-        # Удобно для локальной разработки.
-        # В production SMTP должен быть настроен.
         print(f"[LETOMEET DEV] Code for {email}: {code}")
         return True
 
@@ -259,17 +257,118 @@ def send_email_code(email, code, purpose):
     message.set_content(
         f"""Здравствуйте!
 
-Ваш код для LETOMEET:
+    Ваш код для LETOMEET: {code}
 
-{code}
+    Код действует {CODE_LIFETIME_MINUTES} минут.
 
-Код действует {CODE_LIFETIME_MINUTES} минут.
+    Если вы не запрашивали этот код, просто проигнорируйте это письмо.
 
-Если вы не запрашивали этот код, просто проигнорируйте это письмо.
-
-LETOMEET
-"""
+    LETOMEET
+    """
     )
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+
+    <body style="
+        margin: 0;
+        padding: 0;
+        background-color: #f5f5f5;
+        font-family: Arial, Helvetica, sans-serif;
+    ">
+
+        <div style="
+            max-width: 560px;
+            margin: 40px auto;
+            background: #ffffff;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid #e5e5e5;
+        ">
+
+            <div style="
+                padding: 28px 32px;
+                border-bottom: 1px solid #eeeeee;
+            ">
+                <div style="
+                    font-size: 24px;
+                    font-weight: 700;
+                    letter-spacing: -0.5px;
+                ">
+                    LETOMEET
+                </div>
+            </div>
+
+            <div style="
+                padding: 40px 32px;
+                text-align: center;
+            ">
+
+                <h1 style="
+                    margin: 0 0 12px;
+                    font-size: 24px;
+                    color: #222222;
+                ">
+                    Код подтверждения
+                </h1>
+
+                <p style="
+                    margin: 0 0 28px;
+                    font-size: 15px;
+                    line-height: 1.5;
+                    color: #666666;
+                ">
+                    Используйте этот код для продолжения работы с LETOMEET.
+                </p>
+
+                <div style="
+                    display: inline-block;
+                    padding: 16px 28px;
+                    background: #f7f3df;
+                    border-radius: 12px;
+                    font-size: 32px;
+                    font-weight: 700;
+                    letter-spacing: 6px;
+                    color: #222222;
+                ">
+                    {code}
+                </div>
+
+                <p style="
+                    margin: 24px 0 0;
+                    font-size: 14px;
+                    color: #777777;
+                ">
+                    Код действует {CODE_LIFETIME_MINUTES} минут.
+                </p>
+
+            </div>
+
+            <div style="
+                padding: 24px 32px;
+                background: #fafafa;
+                border-top: 1px solid #eeeeee;
+                font-size: 13px;
+                line-height: 1.5;
+                color: #888888;
+            ">
+                Если вы не запрашивали этот код, просто проигнорируйте это письмо.
+                <br><br>
+                LETOMEET — каталог событий школы.
+            </div>
+
+        </div>
+
+    </body>
+    </html>
+    """
+
+    message.add_alternative(html, subtype="html")
 
     with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
         smtp.starttls()
