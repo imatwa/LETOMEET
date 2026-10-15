@@ -543,7 +543,12 @@ async function adminPage() {
           Загрузка...
         </div>
       </section>
+        <section class="form-section">
+          <h2>Модерация мероприятий</h2>
 
+          <div id="admin-events">
+            Загрузка...
+          </div>
     </section>
   `;
 
@@ -560,6 +565,103 @@ async function adminPage() {
 
     const stats = await statsResponse.json();
     const users = await usersResponse.json();
+    const response = await fetch('/api/admin/events');
+    const data = await response.json();
+
+    const eventsContainer =
+  document.querySelector('#admin-events');
+
+eventsContainer.innerHTML =
+  data.events.length
+    ? data.events.map(event => `
+        <article class="account-event">
+
+          <div>
+            <h3>
+              ${escapeHtml(event.title)}
+            </h3>
+
+            <p class="meta">
+              ${dateLabel(event.date)}
+              ·
+              ${event.time}–${event.end}
+              ·
+              ${escapeHtml(event.place)}
+              ·
+              ${escapeHtml(event.room)}
+            </p>
+
+            <p class="muted">
+              ${escapeHtml(event.summary)}
+            </p>
+
+            <p>
+              Статус:
+              <strong>${escapeHtml(event.status)}</strong>
+            </p>
+
+            ${
+              event.moderation_comment
+                ? `<p class="error">
+                    Комментарий:
+                    ${escapeHtml(event.moderation_comment)}
+                  </p>`
+                : ''
+            }
+          </div>
+
+          <div class="account-event-actions">
+
+            ${
+              event.status !== 'approved'
+                ? `
+                  <button
+                    class="primary"
+                    onclick="moderateEvent(${event.id}, 'approve')"
+                  >
+                    Одобрить
+                  </button>
+                `
+                : ''
+            }
+
+            ${
+              event.status !== 'rejected'
+                ? `
+                  <button
+                    class="secondary"
+                    onclick="
+                      moderateEvent(
+                        ${event.id},
+                        'reject',
+                        prompt('Причина отклонения:') || ''
+                      )
+                    "
+                  >
+                    Отклонить
+                  </button>
+                `
+                : ''
+            }
+
+            ${
+              event.status === 'approved'
+                ? `
+                  <button
+                    class="secondary"
+                    onclick="moderateEvent(${event.id}, 'unpublish')"
+                  >
+                    Снять с публикации
+                  </button>
+                `
+                : ''
+            }
+
+          </div>
+
+        </article>
+      `).join('')
+    : '<p class="muted">Мероприятий пока нет.</p>';
 
     document.querySelector('#admin-stats').innerHTML = `
       <div class="admin-stat">
@@ -600,6 +702,30 @@ async function adminPage() {
     document.querySelector('#admin-users').innerHTML =
       '<p class="error">Не удалось загрузить данные.</p>';
   }
+}
+
+async function moderateEvent(eventId, action, comment = "") {
+    const response = await fetch(
+        `/api/admin/events/${eventId}/${action}`,
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                comment: comment
+            })
+        }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+        alert(data.error || "Ошибка");
+        return;
+    }
+
+    await adminPage();
 }
 
 async function accountPage() {
@@ -1374,7 +1500,6 @@ function createPage() {
         return;
       }
 
-      events.push(result);
       draft = null;
       location.hash = `event/${result.id}`;
     } catch (requestError) {

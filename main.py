@@ -130,6 +130,8 @@ class Event(db.Model):
     count = db.Column(db.Integer, default=0)
     chat = db.Column(db.String(200), default="")
     contact = db.Column(db.String(200), default="")
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    moderation_comment = db.Column(db.Text, nullable=True)
 
     def to_dict(self):
         """Converts the SQL row into a regular dictionary for the API responses"""
@@ -151,7 +153,9 @@ class Event(db.Model):
             "organizer": self.organizer,
             "count": self.count,
             "chat": self.chat,
-            "contact": self.contact
+            "contact": self.contact,
+            "status": self.status,
+            "moderation_comment": self.moderation_comment
         }
 
 
@@ -471,14 +475,22 @@ def index_pages(event_id=None):
 
 @app.get("/api/events")
 def api_events():
-    filtered = filter_events(Event.query, request.args)
+    filtered = filter_events(
+        Event.query.filter_by(status="approved"),
+        request.args
+    )
     return jsonify([event.to_dict() for event in filtered])
 
 @app.get("/api/events/<int:event_id>")
 def api_event(event_id):
-    event = Event.query.get(event_id)
-    if event is None:
-        return jsonify({"error": "Event not found"}), 404
+    event = Event.query.get_or_404(event_id)
+
+    if event.status != "approved":
+        user = current_user()
+
+        if not user or (user.role != "admin" and event.creator_id != user.id):
+            return jsonify({"error": "Мероприятие не опубликовано"}), 404
+
     return jsonify(event.to_dict())
 
 @app.get("/api/filter-groups")
@@ -633,7 +645,8 @@ def api_create_event():
         organizer=str(data["organizer"]).strip(),
         count=0,
         chat=str(data.get("chat", "")).strip(),
-        contact=str(data.get("contact", "")).strip()
+        contact=str(data.get("contact", "")).strip(),
+        status="pending"
     )
 
     db.session.add(new_event)
@@ -947,6 +960,79 @@ def admin_stats():
         "admins": User.query.filter_by(
             role="admin"
         ).count()
+    })
+
+@app.get("/api/admin/events")
+def admin_events():
+    user, error = admin_required()
+    if error:
+        return error
+
+    events = Event.query.order_by(
+        Event.date,
+        Event.time,
+        Event.id
+    ).all()
+
+    return jsonify({
+        "events": [event.to_dict() for event in events]
+    })
+
+@app.post("/api/admin/events/<int:event_id>/approve")
+def approve_event(event_id):
+    user, error = admin_required()
+    if error:
+        return error
+
+    event = Event.query.get_or_404(event_id)
+
+    event.status = "approved"
+    event.moderation_comment = None
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "event": event.to_dict()
+    })
+
+@app.post("/api/admin/events/<int:event_id>/reject")
+def reject_event(event_id):
+    user, error = admin_required()
+    if error:
+        return error
+
+    event = Event.query.get_or_404(event_id)
+
+    data = request.get_json(silent=True) or {}
+    comment = data.get("comment", "").strip()
+
+    event.status = "rejected"
+    event.moderation_comment = comment or None
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "event": event.to_dict()
+    })
+
+@app.post("/api/admin/events/<int:event_id>/unpublish")
+def unpublish_event(event_id):
+    user, error = admin_required()
+    if error:
+        return error
+
+    event = Event.query.get_or_404(event_id)
+
+    event.status = "pending"
+    event.moderation_comment = "Снято с публикации администратором."
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "event": event.to_dict()
     })
 
 if __name__ == "__main__":
