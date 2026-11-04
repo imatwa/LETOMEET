@@ -6,8 +6,11 @@ from datetime import datetime, timezone, timedelta
 import smtplib
 import secrets
 import os
+import uuid
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY",
@@ -132,6 +135,10 @@ class Event(db.Model):
     contact = db.Column(db.String(200), default="")
     status = db.Column(db.String(20), nullable=False, default="pending")
     moderation_comment = db.Column(db.Text, nullable=True)
+    image_url = db.Column(db.String(500), nullable=True)
+    card_color = db.Column(db.String(20), nullable=False, default="cream")
+    card_emoji = db.Column(db.String(20), nullable=True)
+    tagline = db.Column(db.String(80), nullable=True)
 
     def to_dict(self):
         """Converts the SQL row into a regular dictionary for the API responses"""
@@ -155,7 +162,11 @@ class Event(db.Model):
             "chat": self.chat,
             "contact": self.contact,
             "status": self.status,
-            "moderation_comment": self.moderation_comment
+            "moderation_comment": self.moderation_comment,
+            "image_url": self.image_url,
+            "card_color": self.card_color,
+            "card_emoji": self.card_emoji,
+            "tagline": self.tagline
         }
 
 
@@ -412,7 +423,7 @@ FILTER_GROUPS = [
     {
         "key": "activity",
         "label": "Род деятельности",
-        "options": ["Компьютерные игры", "Настольные игры", "Рисование", "Прогулка"],
+        "options": ["Компьютерные игры", "Настольные игры", "Рисование", "Прогулка", "Спорт", "Просмотр", "Разговоры", "Музыка"],
     },
     {
         "key": "type",
@@ -422,12 +433,12 @@ FILTER_GROUPS = [
     {
         "key": "duration",
         "label": "Длительность",
-        "options": ["Буквально 15 минут", "Менее часа", "Около часа", "Пара часов", "Более 5 часов"],
+        "options": ["До 20 минут", "Менее часа", "Около часа", "Пара часов", "Более 5 часов"],
     },
     {
         "key": "place",
         "label": "Место",
-        "options": ["1 дом", "2 дом", "5 дом", "6 дом", "7 дом", "8 дом", "9 дом", "10 дом", "Li4", "Библиотека", "Южный вход"],
+        "options": ["Дом пансиона", "Блок Science", "Учебный блок 2 этажа", "Блок Arts", "Фикусная", "Желтые диваны", "Синие диваны", "Учебный блок 3 этажа", "Главная сцена", "Малая сцена", "Блок иностранных языков", "Большой академ", "Улица", "Ресепшен", "Библиотека"]
     },
 ]
 
@@ -605,6 +616,47 @@ def admin_page():
 
     return render_template("admin.html")
 
+@app.post("/api/upload-image")
+def api_upload_image():
+    if not session.get("user_id"):
+        return jsonify({"error": "Необходимо войти в аккаунт"}), 401
+
+    if "image" not in request.files:
+        return jsonify({"error": "Изображение не выбрано"}), 400
+
+    image = request.files["image"]
+
+    if not image.filename:
+        return jsonify({"error": "Изображение не выбрано"}), 400
+
+    filename = secure_filename(image.filename)
+    extension = os.path.splitext(filename)[1].lower()
+
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+
+    if extension not in allowed_extensions:
+        return jsonify({
+            "error": "Поддерживаются только JPG, PNG и WEBP"
+        }), 400
+
+    upload_folder = os.path.join(
+        app.static_folder,
+        "uploads"
+    )
+
+    os.makedirs(upload_folder, exist_ok=True)
+
+    new_filename = f"{uuid.uuid4().hex}{extension}"
+    image_path = os.path.join(upload_folder, new_filename)
+
+    image.save(image_path)
+
+    image_url = f"/static/uploads/{new_filename}"
+
+    return jsonify({
+        "image_url": image_url
+    }), 201
+
 @app.post("/api/events")
 def api_create_event():
     data = request.get_json(silent=True) or {}
@@ -646,7 +698,11 @@ def api_create_event():
         count=0,
         chat=str(data.get("chat", "")).strip(),
         contact=str(data.get("contact", "")).strip(),
-        status="pending"
+        status="pending",
+        image_url=data.get("image_url") or None,
+        card_color=data.get("card_color") or "cream",
+        card_emoji=data.get("card_emoji") or None,
+        tagline=data.get("tagline") or None
     )
 
     db.session.add(new_event)

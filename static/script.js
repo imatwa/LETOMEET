@@ -611,7 +611,25 @@ eventsContainer.innerHTML =
           </div>
 
           <div class="account-event-actions">
-
+            ${
+              event.image_url
+                ? `
+                  <a
+                    class="admin-event-image-link"
+                    href="${escapeHtml(event.image_url)}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Открыть изображение в полном размере"
+                  >
+                    <img
+                      class="admin-event-image"
+                      src="${escapeHtml(event.image_url)}"
+                      alt="Обложка мероприятия"
+                    >
+                  </a>
+                `
+                : ''
+            }
             ${
               event.status !== 'approved'
                 ? `
@@ -1051,33 +1069,95 @@ function updateList() {
     </div>
     ${
       list.length
-        ? list.map(event => `
-          <a href="#event/${event.id}" class="event-row">
-            <h2>${escapeHtml(event.title)}</h2>
-            <p>${escapeHtml(event.summary)}</p>
-            <div class="meta">
-              <span>${dateLabel(event.date)} · ${event.time}–${event.end}</span>
-              <span>${escapeHtml(event.room)}</span>
-              ${event.regular ? '<span>Еженедельно</span>' : ''}
-            </div>
-            <div class="chips">${tags(event)}</div>
-            <div class="meta">
-              <span>Организатор: ${escapeHtml(event.organizer)}</span>
-              <span>Участников: ${event.count}</span>
-            </div>
-          </a>`
-        ).join('')
+        ? list.map(event => {
+            const allowedColors = [
+              'cream', 'blue', 'green',
+              'lavender', 'peach', 'pink', 'dark'
+            ];
+
+            const color = allowedColors.includes(event.card_color)
+              ? event.card_color
+              : 'cream';
+
+            let emoji = event.card_emoji;
+
+            if (!emoji) {
+              const category = [
+                event.activity,
+                event.type
+              ].join(' ').toLowerCase();
+
+              if (category.includes('спорт')) emoji = '🏀';
+              else if (category.includes('кино') || category.includes('фильм') || category.includes('просмотр')) emoji = '🎬';
+              else if (category.includes('игр')) emoji = '🎮';
+              else if (category.includes('музык')) emoji = '🎵';
+              else if (category.includes('it') || category.includes('программ')) emoji = '💻';
+              else if (category.includes('искусств')) emoji = '🎨';
+              else if (category.includes('литератур')) emoji = '📚';
+              else if (category.includes('наук') || category.includes('учеб') || category.includes('олимп')) emoji = '🧠';
+              else emoji = '✨';
+            }
+
+            return `
+              <a
+                href="#event/${event.id}"
+                class="event-row event-card event-card-${color}"
+              >
+                <div class="event-row-content">
+                  ${
+                    event.image_url
+                      ? `<img
+                          class="event-row-image"
+                          src="${escapeHtml(event.image_url)}"
+                          alt=""
+                        >`
+                      : ''
+                  }
+
+                  <div class="event-row-info">
+                    <div class="event-card-title">
+                      <span class="event-card-emoji">${escapeHtml(emoji)}</span>
+                      <h2>${escapeHtml(event.title)}</h2>
+                    </div>
+
+                    ${
+                      event.tagline
+                        ? `<p class="event-card-tagline">${escapeHtml(event.tagline)}</p>`
+                        : ''
+                    }
+
+                    <p>${escapeHtml(event.summary)}</p>
+
+                    <div class="meta">
+                      <span>${dateLabel(event.date)} · ${event.time}–${event.end}</span>
+                      <span>${escapeHtml(event.room)}</span>
+                      ${event.regular ? '<span>Еженедельно</span>' : ''}
+                    </div>
+
+                    <div class="chips">${tags(event)}</div>
+
+                    <div class="meta">
+                      <span>Организатор: ${escapeHtml(event.organizer)}</span>
+                      <span>Участников: ${event.count}</span>
+                    </div>
+                  </div>
+                </div>
+              </a>
+            `;
+          }).join('')
         : `
           <div class="empty">
             <h2>Пока ничего не нашлось</h2>
             <p class="muted">Попробуйте выбрать меньше фильтров или другой диапазон дат.</p>
             <button id="empty-reset">Сбросить фильтры</button>
-          </div>`
+          </div>
+        `
     }`;
 
   const reset = document.querySelector('#empty-reset');
   if (reset) reset.onclick = clearFilters;
 }
+
 
 
 function catalogPage() {
@@ -1192,6 +1272,16 @@ async function eventPage(event, preview = false) {
     ${preview ? '<p class="notice">Предпросмотр заявки. Она ещё не отправлена и не опубликована.</p>' : ''}
 
     <article class="detail">
+  ${
+    event.image_url
+      ? `<img
+          class="event-detail-image"
+          src="${escapeHtml(event.image_url)}"
+          alt="Обложка мероприятия"
+        >`
+      : ''
+  }
+
       <h1>${escapeHtml(event.title)}</h1>
 
       <div class="meta">
@@ -1326,6 +1416,7 @@ function selectField(key, label, options) {
 }
 
 
+
 function createPage() {
   if (!currentUser) {
     content.innerHTML = `
@@ -1342,8 +1433,14 @@ function createPage() {
 
     return;
   }
-  const groupsWithoutPlace = filterGroups.filter(group => group.key !== 'place');
-  const placeGroup = filterGroups.find(group => group.key === 'place');
+
+  const groupsWithoutPlace = filterGroups.filter(
+    group => group.key !== 'place'
+  );
+
+  const placeGroup = filterGroups.find(
+    group => group.key === 'place'
+  );
 
   content.innerHTML = `
     <section class="event-form">
@@ -1352,24 +1449,102 @@ function createPage() {
 
       <form id="event-form">
         <div class="form-grid">
+
           <label class="field full">
-            Название
-            <input name="title" required maxlength="90" placeholder="Например, настолки после уроков">
+            Название мероприятия
+            <input
+              name="title"
+              required
+              maxlength="120"
+              placeholder="Например, Вечер настольных игр"
+            >
           </label>
+
+          <div class="field full">
+              Оформление карточки
+
+              <div class="card-design-options">
+                <label class="field">
+                  Цвет карточки
+                  <select name="card_color">
+                    <option value="cream" selected>Кремовый</option>
+                    <option value="blue">Голубой</option>
+                    <option value="green">Зелёный</option>
+                    <option value="lavender">Лавандовый</option>
+                    <option value="peach">Персиковый</option>
+                    <option value="pink">Розовый</option>
+                    <option value="dark">Тёмный</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  Эмодзи
+                  <select name="card_emoji">
+                    <option value="">Автоматически</option>
+                    <option value="🎓">🎓 Образование</option>
+                    <option value="🎬">🎬 Кино</option>
+                    <option value="🎮">🎮 Игры</option>
+                    <option value="🏀">🏀 Спорт</option>
+                    <option value="🎵">🎵 Музыка</option>
+                    <option value="💻">💻 IT</option>
+                    <option value="🎨">🎨 Искусство</option>
+                    <option value="🧠">🧠 Интеллект</option>
+                    <option value="📚">📚 Литература</option>
+                    <option value="⚽">⚽ Футбол</option>
+                    <option value="🏆">🏆 Соревнования</option>
+                    <option value="🎤">🎤 Выступления</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <label class="field full">
+              Короткий слоган
+              <input
+                name="tagline"
+                maxlength="80"
+                placeholder="Например, вечер, который нельзя пропустить"
+              >
+              <span class="small muted">Необязательно, максимум 80 символов.</span>
+            </label>
 
           <label class="field full">
             Краткое описание
-            <input name="summary" required maxlength="180" placeholder="Коротко: что будет происходить">
+            <input
+              name="summary"
+              required
+              maxlength="180"
+              placeholder="Коротко: что будет происходить"
+            >
           </label>
 
           <label class="field full">
             Описание
-            <textarea name="description" required maxlength="4000" placeholder="Что будете делать, кому можно прийти и что взять с собой?"></textarea>
+            <textarea
+              name="description"
+              required
+              maxlength="4000"
+              placeholder="Что будете делать, кому можно прийти и что взять с собой?"
+            ></textarea>
           </label>
+
+          <label class="field full">
+            Обложка мероприятия
+            <input
+              type="file"
+              name="image"
+              accept="image/jpeg,image/png,image/webp"
+            >
+            <span class="muted">
+              JPG, PNG или WEBP. Максимальный размер — 5 МБ.
+            </span>
+          </label>
+
         </div>
 
         <section class="form-section">
           <h2>Когда и где</h2>
+
           <div class="form-grid">
             <label class="field">
               Дата
@@ -1398,20 +1573,29 @@ function createPage() {
 
             <label class="field">
               Где именно
-              <input name="room" required maxlength="100" placeholder="Кабинет, гостиная, этаж">
+              <input
+                name="room"
+                required
+                maxlength="100"
+                placeholder="Кабинет, гостиная, этаж"
+              >
             </label>
           </div>
         </section>
 
         <section class="form-section">
           <h2>Теги</h2>
+
           <div class="form-grid">
-            ${groupsWithoutPlace.map(group => selectField(group.key, group.label, group.options)).join('')}
+            ${groupsWithoutPlace.map(
+              group => selectField(group.key, group.label, group.options)
+            ).join('')}
           </div>
         </section>
 
         <section class="form-section">
           <h2>Контакты</h2>
+
           <div class="form-grid">
             <label class="field full">
               Имя организатора
@@ -1420,49 +1604,79 @@ function createPage() {
 
             <label class="field">
               Ссылка на чат события
-              <input type="url" name="chat" placeholder="https://t.me/…">
+              <input
+                type="url"
+                name="chat"
+                placeholder="https://t.me/…"
+              >
             </label>
 
             <label class="field">
               Ссылка на ЛС организатора
-              <input type="url" name="contact" placeholder="https://t.me/…">
+              <input
+                type="url"
+                name="contact"
+                placeholder="https://t.me/…"
+              >
             </label>
           </div>
         </section>
 
         <p class="error" id="form-error" role="alert"></p>
-        <button class="primary" type="submit">Создать событие</button>
+
+        <button class="primary" type="submit">
+          Создать событие
+        </button>
       </form>
-    </section>`;
+    </section>
+  `;
 
   const form = document.querySelector('#event-form');
 
   if (draft) {
     Object.keys(draft).forEach(key => {
-      if (form.elements[key]) form.elements[key].value = String(draft[key]);
+      if (form.elements[key]) {
+        form.elements[key].value = String(draft[key]);
+      }
     });
   }
 
   form.oninput = () => {
-    draft = Object.fromEntries(new FormData(form));
+    const formData = new FormData(form);
+    formData.delete('image');
+
+    draft = Object.fromEntries(formData);
   };
 
   form.onsubmit = async event => {
     event.preventDefault();
 
     const data = Object.fromEntries(new FormData(form));
+
+    const imageFile = data.image;
+    delete data.image;
+
     const error = document.querySelector('#form-error');
 
+    // Проверка размера изображения
+    if (imageFile && imageFile.size > 5 * 1024 * 1024) {
+      error.textContent = 'Изображение должно быть не больше 5 МБ.';
+      return;
+    }
+
+    // Проверка времени
     if (data.end <= data.time) {
       error.textContent = 'Окончание должно быть позже начала. Укажите время в пределах одного дня.';
       return;
     }
 
+    // Проверка ссылок
     for (const key of ['chat', 'contact']) {
       if (!data[key]) continue;
 
       try {
         const url = new URL(data[key]);
+
         if (!['https:', 'http:'].includes(url.protocol)) {
           error.textContent = 'Ссылки должны начинаться с https:// или http://.';
           return;
@@ -1473,23 +1687,64 @@ function createPage() {
       }
     }
 
-    for (const key of ['title', 'summary', 'description', 'room', 'organizer']) {
+    // Проверка текстовых полей
+    for (const key of [
+      'title',
+      'summary',
+      'description',
+      'room',
+      'organizer'
+    ]) {
       data[key] = data[key].trim();
+
       if (!data[key]) {
         error.textContent = 'Заполните текстовые поля: одних пробелов недостаточно.';
         return;
       }
     }
 
+    // Загрузка изображения
+    let imageUrl = null;
+
+    if (imageFile && imageFile.size > 0) {
+      const imageData = new FormData();
+      imageData.append('image', imageFile);
+
+      try {
+        const uploadResponse = await fetch('/api/upload-image', {
+          method: 'POST',
+          body: imageData
+        });
+
+        const uploadResult = await uploadResponse.json();
+
+        if (!uploadResponse.ok) {
+          error.textContent = uploadResult.error || 'Не удалось загрузить изображение.';
+          return;
+        }
+
+        imageUrl = uploadResult.image_url;
+
+      } catch {
+        error.textContent = 'Не удалось загрузить изображение. Проверьте соединение с сервером.';
+        return;
+      }
+    }
+
+    // Подготовка данных мероприятия
     const payload = {
       ...data,
-      regular: data.regular === 'true'
+      regular: data.regular === 'true',
+      image_url: imageUrl
     };
 
+    // Отправка мероприятия на сервер
     try {
       const response = await fetch('/api/events', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify(payload)
       });
 
@@ -1502,11 +1757,13 @@ function createPage() {
 
       draft = null;
       location.hash = `event/${result.id}`;
+
     } catch (requestError) {
       error.textContent = 'Сервер недоступен. Запустите Flask-приложение.';
     }
   };
 }
+
 
 
 async function render() {
