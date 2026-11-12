@@ -597,3 +597,34 @@ dialog::backdrop { background: #29282066; }
     height: 80px;
   }
 }
+/* Additional views reuse the original palette, fields and buttons. */
+.comments-panel {margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}
+.comment {padding:1rem 0;border-bottom:1px solid #ddd}
+.comment p {white-space:pre-wrap;overflow-wrap:anywhere}
+.comment button {margin-left:1rem}
+.map-layout {display:grid;grid-template-columns:minmax(0,3fr) minmax(200px,1fr);gap:24px}
+.map-scroll {overflow:auto;border:1px solid #ddd;border-radius:16px;background:#fff}
+.school-map {position:relative;min-width:800px}
+.school-map img {display:block;width:100%;height:auto}
+.map-pins {position:absolute;inset:0;pointer-events:none}
+.map-pin {position:absolute;transform:translate(-50%,-50%);border-radius:50%;background:#dfc878;color:#222;border:2px solid #222;min-width:28px;height:28px;display:grid;place-items:center;font-weight:bold;pointer-events:auto}
+@media(max-width:700px){.map-layout{grid-template-columns:1fr}}
+
+/* Map and creation-form refinements. */
+.school-map {min-width:0;width:100%;flex-shrink:0}
+.map-scroll {max-height:70vh;overscroll-behavior:contain}
+.map-zoom-controls {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}
+.map-zoom-controls input {width:140px;min-width:80px}
+.map-zoom-controls output {min-width:3.5em;font-variant-numeric:tabular-nums}
+.color-picker {border:0;padding:0;margin:0;min-width:0}
+.color-swatches {display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+.color-option {display:flex;flex-direction:column;align-items:center;position:relative;gap:6px;cursor:pointer;font-size:12px}
+.color-option input {position:absolute;width:1px;height:1px;opacity:0}
+.color-swatch {display:block;width:40px;height:40px;border:2px solid #888;border-radius:50%}
+.color-option input:checked + .color-swatch {outline:3px solid #786529;outline-offset:3px}
+.color-option input:focus-visible + .color-swatch {outline:3px dashed #222;outline-offset:4px}
+.card-color-preview {border:1px solid #bbb;border-radius:14px;padding:18px;margin-top:16px}
+.card-color-preview p {margin-bottom:0}
+.upload-preview {display:block;max-width:100%;max-height:260px;border-radius:12px;object-fit:contain;margin:12px 0}
+.upload-preview:not([src]) {display:none}
+#image-status {overflow-wrap:anywhere}

@@ -7,14 +7,19 @@ import smtplib
 import secrets
 import os
 import uuid
-from werkzeug.utils import secure_filename
+import re
+from PIL import Image, UnidentifiedImageError
+from flask import send_from_directory, send_file
+from sqlalchemy.exc import SQLAlchemyError
+import io
+from PIL import ImageOps
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = int(4.25 * 1024 * 1024)
 
 app.config["SECRET_KEY"] = os.environ.get(
     "SECRET_KEY",
-    "dev-secret-key"
+    secrets.token_hex(32)
 )
 
 if not app.config["SECRET_KEY"]:
@@ -40,7 +45,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-ADMIN_EMAIL = '2028vasiliev.ea@student.letovo.ru'
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.environ.get("APP_ENV") == "production")
+if os.environ.get("APP_ENV") == "production" and not os.environ.get("SECRET_KEY"):
+    raise RuntimeError("Set SECRET_KEY in production")
+UPLOAD_FOLDER = os.path.abspath(os.environ.get("UPLOAD_FOLDER", os.path.join(app.instance_path, "uploads")))
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
 # -----------------------------
 # Data model
 # -----------------------------
@@ -205,7 +214,7 @@ def normalize_email(email):
 
 
 def valid_letovo_email(email):
-    return email.endswith(ALLOWED_DOMAINS)
+    return len(email) <= 150 and bool(re.fullmatch(r"[a-z0-9.!#$%&\'*+/=?^_`{|}~-]+@(student\.letovo\.ru|letovo\.ru)", email))
 
 
 def ensure_admin():
@@ -238,6 +247,24 @@ def ensure_admin():
     db.session.commit()
 
 
+class SecurityCounter(db.Model):
+    key = db.Column(db.String(240), primary_key=True)
+    count = db.Column(db.Integer, default=0)
+    reset = db.Column(db.DateTime, nullable=False)
+
+class EventImage(db.Model):
+    id = db.Column(db.String(32), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    data = db.Column(db.LargeBinary, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    event_id = db.Column(db.Integer, db.ForeignKey("event.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    body = db.Column(db.String(2000), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 with app.app_context():
     db.create_all()
     ensure_admin()
@@ -255,8 +282,10 @@ def send_email_code(email, code, purpose):
     email_from = os.environ.get("EMAIL_FROM", smtp_user)
 
     if not smtp_host or not smtp_user or not smtp_password:
-        print(f"[LETOMEET DEV] Code for {email}: {code}")
-        return True
+        if os.environ.get("MAIL_MODE") == "console" and os.environ.get("APP_ENV") != "production":
+            print(f"[LETOMEET DEV] Code for {email}: {code}")
+            return True
+        raise RuntimeError("SMTP is not configured")
 
     message = EmailMessage()
 
@@ -468,6 +497,82 @@ def filter_events(query_base, args):
 # Pages (FIX #2: Cleaned up overlapped routing decorators)
 # -----------------------------
 
+@app.before_request
+def protect_requests():
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("Origin")
+        if origin and origin != request.host_url.rstrip("/"):
+            return jsonify(error="Недопустимый источник запроса"), 403
+    if request.path.startswith("/api/auth/") and request.method == "POST" and request.path.endswith(("/request", "/verify")):
+        data = request.get_json(silent=True) or {}
+        email = normalize_email(data.get("email"))
+        verify = request.path.endswith("/verify")
+        now = datetime.utcnow()
+        keys = [("ip:" + str(request.remote_addr), 50, 600),
+                (("verify:" if verify else "send:") + email, 5 if verify else 1, 600 if verify else 60)]
+        for key, limit, seconds in keys:
+            row = db.session.get(SecurityCounter, key)
+            if not row:
+                row = SecurityCounter(key=key, count=0, reset=now + timedelta(seconds=seconds))
+                db.session.add(row)
+            if row.reset < now:
+                row.count = 0
+                row.reset = now + timedelta(seconds=seconds)
+            if row.count >= limit:
+                db.session.commit()
+                return jsonify(error="Слишком много попыток. Попробуйте позже."), 429
+            row.count += 1
+        if not verify:
+            AuthCode.query.filter_by(email=email).delete()
+        db.session.commit()
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return jsonify(error="Фото должно быть не больше 4 МБ. Попробуйте уменьшить файл."), 413
+
+@app.get("/media/<filename>")
+def media(filename):
+    if re.fullmatch(r"[a-f0-9]{32}\.jpg", filename):
+        stored = db.session.get(EventImage, filename[:-4])
+        if stored:
+            response = send_file(io.BytesIO(stored.data), mimetype="image/jpeg", download_name=filename,
+                                 max_age=86400, etag=stored.id, conditional=True)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+    # Keep pre-update local photo URLs working on persistent servers.
+    return send_from_directory(UPLOAD_FOLDER, filename)
+
+@app.route("/api/events/<int:event_id>/comments", methods=["GET", "POST"])
+def event_comments(event_id):
+    event = db.get_or_404(Event, event_id)
+    user = current_user()
+    if event.status != "approved":
+        return jsonify(error="Событие не опубликовано"), 404
+    if request.method == "POST":
+        if not user:
+            return jsonify(error="Необходимо войти"), 401
+        body = str((request.get_json(silent=True) or {}).get("body", "")).strip()
+        if not 1 <= len(body) <= 2000:
+            return jsonify(error="Комментарий: от 1 до 2000 символов"), 400
+        recent = Comment.query.filter(Comment.user_id == user.id, Comment.created_at > datetime.utcnow() - timedelta(seconds=10)).first()
+        if recent:
+            return jsonify(error="Подождите 10 секунд"), 429
+        db.session.add(Comment(event_id=event_id, user_id=user.id, body=body))
+        db.session.commit()
+    rows = Comment.query.filter_by(event_id=event_id).order_by(Comment.id.desc()).limit(100).all()
+    return jsonify([dict(id=c.id, body=c.body, author=db.session.get(User, c.user_id).username,
+                         created_at=c.created_at.isoformat()+"Z", can_delete=bool(user and (user.id == c.user_id or user.role == "admin"))) for c in rows])
+
+@app.delete("/api/comments/<int:comment_id>")
+def delete_comment(comment_id):
+    user = current_user()
+    comment = db.get_or_404(Comment, comment_id)
+    if not user or (user.id != comment.user_id and user.role != "admin"):
+        return jsonify(error="Доступ запрещён"), 403
+    db.session.delete(comment)
+    db.session.commit()
+    return jsonify(ok=True)
+
 @app.get('/favicon.ico')
 def favicon():
     return '', 204
@@ -521,6 +626,9 @@ def join_event(event_id):
 
     if not event:
         return jsonify({"error": "Мероприятие не найдено"}), 404
+
+    if event.status != "approved":
+        return jsonify(error="Событие не опубликовано"), 404
 
     # Проверяем, не записан ли пользователь уже
     existing_registration = Registration.query.filter_by(
@@ -629,8 +737,9 @@ def api_upload_image():
     if not image.filename:
         return jsonify({"error": "Изображение не выбрано"}), 400
 
-    filename = secure_filename(image.filename)
-    extension = os.path.splitext(filename)[1].lower()
+    # Only inspect the extension: storage always uses a generated UUID.
+    # Sanitizing a Cyrillic-only basename can accidentally remove its dot.
+    extension = os.path.splitext(image.filename)[1].lower()
 
     allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
 
@@ -639,19 +748,34 @@ def api_upload_image():
             "error": "Поддерживаются только JPG, PNG и WEBP"
         }), 400
 
-    upload_folder = os.path.join(
-        app.static_folder,
-        "uploads"
-    )
-
-    os.makedirs(upload_folder, exist_ok=True)
-
-    new_filename = f"{uuid.uuid4().hex}{extension}"
-    image_path = os.path.join(upload_folder, new_filename)
-
-    image.save(image_path)
-
-    image_url = f"/static/uploads/{new_filename}"
+    raw = image.read(4 * 1024 * 1024 + 1)
+    if len(raw) > 4 * 1024 * 1024:
+        return jsonify(error="Фото должно быть не больше 4 МБ."), 413
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format not in {"JPEG", "PNG", "WEBP"}:
+                return jsonify(error="Выберите настоящее изображение JPG, PNG или WEBP. HEIC и SVG не поддерживаются."), 400
+            if source.width * source.height > 20000000:
+                return jsonify(error="Фото слишком большое: максимум 20 мегапикселей. Уменьшите разрешение."), 400
+            source.load()
+            source = ImageOps.exif_transpose(source)
+            source.thumbnail((2400, 2400))
+            rgba = source.convert("RGBA")
+            clean = Image.new("RGB", rgba.size, "white")
+            clean.paste(rgba, mask=rgba.getchannel("A"))
+            encoded = io.BytesIO()
+            clean.save(encoded, "JPEG", quality=88)
+    except (UnidentifiedImageError, ValueError, OSError, Image.DecompressionBombError):
+        return jsonify(error="Не удалось прочитать фото. Сохраните его как JPG, PNG или WEBP и выберите снова."), 400
+    photo_id = uuid.uuid4().hex
+    try:
+        db.session.add(EventImage(id=photo_id, user_id=session["user_id"], data=encoded.getvalue()))
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not save event photo")
+        return jsonify(error="Не удалось сохранить фото. Попробуйте позже или создайте событие без фото."), 503
+    image_url = f"/media/{photo_id}.jpg"
 
     return jsonify({
         "image_url": image_url
@@ -670,6 +794,14 @@ def api_create_event():
     if missing:
         return jsonify({"error": "Не заполнены обязательные поля", "fields": missing}), 400
 
+    try:
+        datetime.strptime(str(data["date"]), "%Y-%m-%d")
+        datetime.strptime(str(data["time"]), "%H:%M")
+        datetime.strptime(str(data["end"]), "%H:%M")
+    except ValueError:
+        return jsonify(error="Некорректная дата или время"), 400
+    if any(len(str(value)) > 10000 for value in data.values()):
+        return jsonify(error="Слишком длинное поле"), 400
     if data["end"] <= data["time"]:
         return jsonify({"error": "Окончание должно быть позже начала"}), 400
 
@@ -680,6 +812,11 @@ def api_create_event():
             "error": "Необходимо войти в аккаунт"
         }), 401
 
+    if data.get("image_url") and not re.fullmatch(r"/media/[a-f0-9]{32}\.jpg", str(data["image_url"])):
+        return jsonify({"error": "Сначала загрузите фото"}), 400
+    for field in ("chat", "contact"):
+        if data.get(field) and not str(data[field]).startswith(("https://", "http://")):
+            return jsonify(error="Контакты должны быть HTTP(S) ссылками"), 400
     new_event = Event(
         creator_id=user_id,
         title=str(data["title"]).strip(),
@@ -849,6 +986,7 @@ def register_verify():
     db.session.delete(auth_code)
     db.session.commit()
 
+    session.clear()
     session["user_id"] = user.id
 
     return jsonify({
@@ -949,6 +1087,7 @@ def login_verify():
     db.session.delete(auth_code)
     db.session.commit()
 
+    session.clear()
     session["user_id"] = user.id
 
     return jsonify({
@@ -1092,4 +1231,4 @@ def unpublish_event(event_id):
     })
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1")
