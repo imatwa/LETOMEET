@@ -847,6 +847,85 @@ def api_create_event():
 
     return jsonify(new_event.to_dict()), 201
 
+
+
+@app.put("/api/events/<int:event_id>")
+def api_edit_rejected_event(event_id):
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Необходимо войти в аккаунт"}), 401
+
+    event = Event.query.get_or_404(event_id)
+
+    if event.creator_id != user_id:
+        return jsonify({"error": "Вы можете редактировать только свои мероприятия"}), 403
+
+    if event.status != "rejected":
+        return jsonify({"error": "Редактировать можно только отклонённые мероприятия"}), 409
+
+    data = request.get_json(silent=True) or {}
+    required = [
+        "title", "summary", "description", "activity", "type",
+        "duration", "place", "room", "date", "time", "end", "organizer"
+    ]
+    missing = [field for field in required if not str(data.get(field, "")).strip()]
+    if missing:
+        return jsonify({"error": "Не заполнены обязательные поля", "fields": missing}), 400
+
+    try:
+        datetime.strptime(str(data["date"]), "%Y-%m-%d")
+        datetime.strptime(str(data["time"]), "%H:%M")
+        datetime.strptime(str(data["end"]), "%H:%M")
+    except ValueError:
+        return jsonify(error="Некорректная дата или время"), 400
+
+    if any(len(str(value)) > 10000 for value in data.values()):
+        return jsonify(error="Слишком длинное поле"), 400
+
+    if data["end"] <= data["time"]:
+        return jsonify({"error": "Окончание должно быть позже начала"}), 400
+
+    image_url = data.get("image_url") or None
+    if image_url:
+        image_match = re.fullmatch(r"/media/([a-f0-9]{32})\.jpg", str(image_url))
+        if not image_match:
+            return jsonify({"error": "Сначала загрузите фото"}), 400
+        uploaded_image = db.session.get(EventImage, image_match.group(1))
+        if not uploaded_image or uploaded_image.user_id != user_id:
+            return jsonify({"error": "Это изображение недоступно для вашего аккаунта"}), 403
+
+    for field in ("chat", "contact"):
+        if data.get(field) and not str(data[field]).startswith(("https://", "http://")):
+            return jsonify(error="Контакты должны быть HTTP(S) ссылками"), 400
+
+    # Update editable fields only; keep ID, author, participant count and registrations.
+    for field in (
+        "title", "summary", "description", "activity", "type", "duration",
+        "place", "room", "date", "time", "end", "organizer"
+    ):
+        setattr(event, field, str(data[field]).strip())
+
+    event.regular = bool(data.get("regular", False))
+    event.chat = str(data.get("chat", "")).strip()
+    event.contact = str(data.get("contact", "")).strip()
+    event.image_url = image_url
+    event.card_color = data.get("card_color") or "cream"
+    event.card_emoji = data.get("card_emoji") or None
+    event.tagline = data.get("tagline") or None
+
+    # Corrected applications always return to the moderation queue.
+    event.status = "pending"
+    event.moderation_comment = None
+
+    db.session.commit()
+
+    return jsonify({
+        "success": True,
+        "message": "Исправленное мероприятие отправлено на повторную модерацию",
+        "event": event.to_dict()
+    })
+
+
 @app.get("/api/me/events")
 def my_events():
     user_id = session.get("user_id")

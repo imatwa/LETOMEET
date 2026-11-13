@@ -102,6 +102,59 @@ class Features(unittest.TestCase):
         payload['image_url']='https://example.com/photo.jpg'
         self.assertEqual(self.client.post('/api/events',json=payload).status_code,400)
 
+    def test_rejected_event_can_be_edited_and_resubmitted_by_creator(self):
+        uid = self.login()
+        eid = self.event("rejected")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = uid
+        event.moderation_comment = "Уточните место проведения"
+        event.count = 3
+        m.db.session.commit()
+
+        payload = dict(
+            title="Updated event", summary="Updated summary",
+            description="Updated details", activity="Sport", type="Club",
+            duration="Hour", place="School", room="AS2",
+            date="2026-11-21", time="18:00", end="19:00",
+            organizer="Student", regular=False, chat="", contact="",
+            image_url=None, card_color="blue", card_emoji="🏀",
+            tagline="Updated"
+        )
+        response = self.client.put(f"/api/events/{eid}", json=payload)
+        self.assertEqual(response.status_code, 200)
+        updated = response.json["event"]
+        self.assertEqual(updated["id"], eid)
+        self.assertEqual(updated["creator_id"], uid)
+        self.assertEqual(updated["title"], "Updated event")
+        self.assertEqual(updated["status"], "pending")
+        self.assertIsNone(updated["moderation_comment"])
+        self.assertEqual(updated["count"], 3)
+
+    def test_only_creator_can_edit_rejected_event(self):
+        creator_id = self.login("Creator")
+        eid = self.event("rejected")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = creator_id
+        m.db.session.commit()
+
+        self.login("Other")
+        response = self.client.put(f"/api/events/{eid}", json={
+            "title": "Hack"
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(m.db.session.get(m.Event, eid).title, "Test")
+
+    def test_non_rejected_event_cannot_be_edited(self):
+        creator_id = self.login("Creator")
+        eid = self.event("pending")
+        event = m.db.session.get(m.Event, eid)
+        event.creator_id = creator_id
+        m.db.session.commit()
+        response = self.client.put(f"/api/events/{eid}", json={
+            "title": "Hack"
+        })
+        self.assertEqual(response.status_code, 409)
+
     def test_map_and_origin(self):
         import json
         from pathlib import Path

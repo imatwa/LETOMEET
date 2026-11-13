@@ -873,6 +873,14 @@ async function accountPage() {
             <p class="muted">
               Участников: ${event.count}
             </p>
+
+            <p class="meta">
+              Статус: <strong>${({pending:'На модерации',approved:'Опубликовано',rejected:'Отклонено'})[event.status] || escapeHtml(event.status)}</strong>
+            </p>
+
+            ${event.status === 'rejected' && event.moderation_comment
+              ? `<p class="error">Причина отклонения: ${escapeHtml(event.moderation_comment)}</p>`
+              : ''}
           </div>
 
           <div class="account-event-actions">
@@ -882,6 +890,9 @@ async function accountPage() {
             >
               Открыть
             </a>
+            ${event.status === 'rejected'
+              ? `<a class="secondary" href="#edit/${event.id}">Исправить и отправить повторно</a>`
+              : ''}
           </div>
 
         </article>
@@ -1276,6 +1287,9 @@ async function eventPage(event, preview = false) {
       <p>Пока событие не опубликовано, оно не отображается в каталоге и на карте. Запись и комментарии станут доступны после одобрения администратором.</p>
       ${event.moderation_comment ? `<p>Комментарий администратора: ${escapeHtml(event.moderation_comment)}</p>` : ''}
       <a href="#account">Мои события</a>
+      ${event.status === 'rejected' && currentUser && event.creator_id === currentUser.id
+        ? ` · <a href="#edit/${event.id}">Исправить мероприятие</a>`
+        : ''}
       ${currentUser?.role === 'admin' ? ' · <a href="#admin">Открыть модерацию</a>' : ''}
       <button type="button" class="secondary" id="refresh-event-status">Обновить статус</button>
     </section>` : ''}
@@ -1431,7 +1445,7 @@ function selectField(key, label, options) {
 
 
 
-function createPage() {
+function createPage(editEvent = null) {
   if (!currentUser) {
     content.innerHTML = `
       <section class="empty">
@@ -1459,7 +1473,7 @@ function createPage() {
   content.innerHTML = `
     <section class="event-form">
       <a class="back" href="#home">← На главную</a>
-      <h1>Добавить своё событие</h1>
+      <h1>${editEvent ? "Редактировать мероприятие" : "Добавить своё событие"}</h1>
 
       <form id="event-form">
         <div class="form-grid">
@@ -1641,7 +1655,7 @@ function createPage() {
         <p class="error" id="form-error" role="alert"></p>
 
         <button class="primary" type="submit">
-          Создать событие
+          ${editEvent ? 'Сохранить изменения и отправить на модерацию' : 'Создать событие'}
         </button>
       </form>
     </section>
@@ -1659,9 +1673,14 @@ function createPage() {
   }
 
 
-  if (draft) {
-    Object.keys(draft).forEach(key => {
-      if (key !== 'image' && form.elements[key]) form.elements[key].value = String(draft[key]);
+  const formValues = editEvent || draft;
+  if (formValues) {
+    Object.keys(formValues).forEach(key => {
+      if (key !== 'image' && key !== 'id' && key !== 'creator_id' &&
+          key !== 'count' && key !== 'status' && key !== 'moderation_comment' &&
+          form.elements[key]) {
+        form.elements[key].value = String(formValues[key] ?? '');
+      }
     });
   }
 
@@ -1682,9 +1701,25 @@ function createPage() {
   let photoVersion = 0;
   let photoInvalid = false;
   let photoChecking = false;
+  let existingImageUrl = editEvent?.image_url || null;
+  let removeExistingImage = false;
+
+  if (existingImageUrl) {
+    imagePreview.src = existingImageUrl;
+    imagePanel.hidden = false;
+    imageStatus.textContent = 'Текущая обложка мероприятия';
+  }
+
   form.querySelector('#remove-image').onclick = () => {
-    photoVersion++; imageInput.value = ''; imagePreview.removeAttribute('src');
-    imagePanel.hidden = true; imageStatus.textContent = ''; photoInvalid = false; photoChecking = false;
+    photoVersion++;
+    imageInput.value = '';
+    imagePreview.removeAttribute('src');
+    imagePanel.hidden = true;
+    imageStatus.textContent = '';
+    photoInvalid = false;
+    photoChecking = false;
+    if (editEvent) removeExistingImage = true;
+    existingImageUrl = null;
   };
   imageInput.onchange = async () => {
     const version = ++photoVersion;
@@ -1720,9 +1755,9 @@ function createPage() {
   };
 
   form.oninput = () => {
+    if (editEvent) return;
     const formData = new FormData(form);
     formData.delete('image');
-
     draft = Object.fromEntries(formData);
   };
 
@@ -1817,18 +1852,21 @@ function createPage() {
     const payload = {
       ...data,
       regular: data.regular === 'true',
-      image_url: imageUrl
+      image_url: imageUrl || existingImageUrl || null
     };
 
-    // Отправка мероприятия на сервер
+    // Create a new event or resubmit the corrected rejected event.
     try {
-      const response = await fetch('/api/events', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
+      const response = await fetch(
+        editEvent ? `/api/events/${editEvent.id}` : '/api/events',
+        {
+          method: editEvent ? 'PUT' : 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        }
+      );
 
       const result = await response.json();
 
@@ -1837,8 +1875,9 @@ function createPage() {
         return;
       }
 
-      draft = null;
-      location.hash = `event/${result.id}`;
+      if (!editEvent) draft = null;
+      const savedEvent = result.event || result;
+      location.hash = `event/${savedEvent.id}`;
 
     } catch (requestError) {
       error.textContent = 'Сервер недоступен. Запустите Flask-приложение.';
@@ -1880,6 +1919,20 @@ async function render() {
 
   } else if (route === 'create') {
     createPage();
+
+  } else if (route.startsWith('edit/')) {
+    const id = Number(route.split('/')[1]);
+    try {
+      const response = await fetch(`/api/events/${id}`, {cache: 'no-store'});
+      const event = response.ok ? await response.json() : null;
+      if (!event || event.status !== 'rejected' || event.creator_id !== currentUser?.id) {
+        content.innerHTML = '<section class="empty"><h1>Редактирование недоступно</h1><p>Редактировать можно только собственные отклонённые мероприятия.</p><a href="#account">Вернуться в личный кабинет</a></section>';
+      } else {
+        createPage(event);
+      }
+    } catch {
+      content.innerHTML = '<p class="error">Не удалось загрузить мероприятие. Попробуйте ещё раз.</p><a href="#account">Мои события</a>';
+    }
 
   } else if (route === 'preview' && draft) {
     eventPage(
